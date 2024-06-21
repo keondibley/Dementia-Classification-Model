@@ -1,0 +1,476 @@
+---
+title: "131 Final Project: Dementia Classification"
+author: "Keon Dibley"
+output: rmarkdown::github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+In this document, I will be working with data I found on Kaggle, compiled by user Fatemeh Mehrparvar. The original dataset information can be found at the link below. The original data was collected by researchers who relayed their findings in a research paper, which I have also cited below.
+
+Data set link: https://www.kaggle.com/datasets/fatemehmehrparvar/dementia/data
+
+Research paper citation: 
+
+   - Amin Al Olama, Ali et al. “Simple MRI score aids prediction of dementia in cerebral small vessel disease.” Neurology vol. 94,12 (2020): e1294-e1302. doi:10.1212/WNL.0000000000009141\
+   
+\
+
+## Introduction
+
+In this classification project, we will be identifying whether or not a patient has dementia using different medical and personal data. Dementia is not a specific disease, but rather a general term that refers to a decline in mental ability. Suffering from dementia can impact one's ability to remember, think, and make decisions. For example, the most common cause of dementia is Alzheimer's disease, which is characterized by the death of brain cell connections. Some of the predictors of dementia which we will explore are white matter brain damage, presence of lacunes in the brain, and presence of microbleeds in the brain. More information on these predictors and what they mean can be found in the codebook section of this document.
+
+Also, the data used in making this model was collected from three different studies, labeled "scans", "ASPS", and "rundmc" in the data set. The "ASPS" study is split into two different cohorts in this data set, which are labeled "ASPS-family" and "ASPS-elderly". Any information surrounding the original data collection that was referenced in this document can be found at the following link to the original study: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7274929/. The goals of this project are to find the optimal model to predict dementia presence in patients and to find the most important features and things to look out for when predicting dementia. After completing this project, I hope to have a better understanding of dementia risk factors along with a model that can be make accurate predictions on new data. 
+
+## Codebook
+
+   - age - Age of patient
+   
+   - gender - Patient's gender
+   
+   - dementia_all - Presence of dementia, 1=dementia (excluding missing values, response variable)
+   
+   - educationyears - Length of education (in years)
+   
+   - EF - Executive function (numeric variable, describes the level of mental skills, can be assessed through neurological tests)
+   
+   - PS - Processing speed (numeric variable, evaluates the brain’s ability to process information, it affects one’s ability to use executive functions)
+   
+   - Global - Global cognitive score (assesses overall status of cognition)
+   
+   - diabetes - Presence of diabetes (1 - yes, 0 - no)
+   
+   - smoking - Smoking status (categorical, describes “current smokers”, “non-smokers”, “ex-smokers”
+   
+   - hypertension - Presence of hypertension (high blood pressure) in the patient (“yes”/”no)
+   
+   - hypercholesterolemia - Hypercholesterolemia (presence of high cholesterol levels in the blood, “yes”/”no”)
+   
+   - lacunes_num - Number of lacunes (categorical, binary, “zero”/”more-than-zero”), lacunes are small cavities in the brain which can be indicative of diabetes/cognitive impairment
+   
+   - fazekas_cat - Indicates level of white matter brain damage, uses Fazekas scale: 0 = absent, 1 = "caps" or pencil-thin lining, 2 = smooth "halo", 3 = irregular periventricular signal extending into deep white matter, information found outside of dataset: https://radiopaedia.org/articles/fazekas-scale-for-white-matter-lesions?lang=us categorizes scores into “0 to 1” and “2 to 3”.
+   
+   - study1 - indicates which study the observation originated from (“scans”, “rundmc”, “ASPS”)
+   
+   - study - same as study1, but splits “ASPS” into “ASPS-elderly” and “ASPS-family”, indicates family and elderly cohorts of ASPS study. Information found about the studies wasn’t in the dataset, but at this link: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7274929/
+   
+   - SVD Simple Score - SVD (Small Vessel Disease) Simple Score, measures the signs of SVD, includes factors like lacunes, fazekas score, and microbleeds
+   
+   - SVD Amended Score - SVD Amended Score, similar to Simple Score, but with a wider range, weighting factors more heavily.
+   
+   - Fazekas - numerical variable, has the same meaning as fazekas_cat, gives discrete value ranging from 0 to 3.
+   
+   - lac_count - Same meaning as lacunes_num, but describes the category “more-than-zero” in more detail: “1 to 2”, “3 to 5”, and “>5”
+   
+   - CMB_count - categorical variable with two values: 0 and at least one, describes cerebral microbleeds, which are small brain hemorrhages.
+
+## Exploratory Data Analysis
+
+First, I read in the data, loaded relevant packages, and cleaned the predictor names to make it easier to subset the data. Also, I removed the unnecessary variables *ID* and *dementia* (duplicate variable). 
+
+```{r}
+# Data reading, initialization, loading packages
+
+set.seed(5655)
+
+dementia_init <- read.csv('C:/Users/Keon School/Downloads/dementia/dementia.csv')
+
+#dementia_init
+
+library(ggplot2)
+library(tidyverse)
+library(tidymodels)
+library(dplyr)
+library(corrplot)
+library(naniar)
+library(themis)
+library(janitor)
+library(yardstick)
+```
+
+```{r}
+# drop dementia, unnecessary duplicate column. Also remove ID, unnecessary for modeling/prediction
+
+dementia <- dementia_init %>% select(-dementia, -ID)
+
+dementia <- dementia %>% clean_names()
+
+#dementia
+```
+
+### Missingness
+
+Before modeling my data, I wanted to examine missing values in the data. To do so, I created a plot to visualize missingness by missing predictor value, which is shown below: 
+
+```{r}
+#visualizing/dealing with missing data
+
+vis_miss(dementia)
+
+dementia <- dementia %>% drop_na(smoking)
+
+#data missing in SVD is from ASPS study, not missing at random
+```
+
+In this plot, we can see that there is missing data for the variables `ef`, `ps`, `global`, `svd_simple_score`, and `svd_amended_score`. For these variables, a majority of the data is still present, so it makes sense to use imputation to generate reasonable values for these missing values. 
+
+Through investigation of the original research investigation, I discovered that there is a pattern to the SVD score missing data. For the ASPS study, many participants didn't have complete MRI data available, which lead to these particular missing values. Since the column with the largest proportion of missing values is only 37%, we will try to use imputation for all missing values to avoid bias in our model, which could be caused by dropping these values. We will touch on this again when creating our recipe.
+
+Since `smoking` only has 1% missing data, we will just drop these rows, for simplicity's sake.\
+
+\
+
+After dealing with missing data, I factored the categorical variables in my data set, so that they could be included in my model. 
+
+```{r}
+# factor categorical variables
+
+dementia$gender <- factor(dementia$gender)
+dementia$dementia_all <- factor(dementia$dementia_all)
+dementia$diabetes <- factor(dementia$diabetes)
+dementia$smoking <- factor(dementia$smoking)
+dementia$hypertension <- factor(dementia$hypertension)
+dementia$hypercholesterolemia <- factor(dementia$hypercholesterolemia)
+dementia$lacunes_num <- factor(dementia$lacunes_num)
+dementia$fazekas_cat <- factor(dementia$fazekas_cat)
+dementia$study <- factor(dementia$study)
+dementia$study1 <- factor(dementia$study1)
+dementia$lac_count <- factor(dementia$lac_count)
+dementia$cmb_count <- factor(dementia$cmb_count)
+
+#n_distinct(dementia$svd_simple_score)
+```
+
+
+### Data Visualization
+
+First, I wanted to visualize the distribution of the response variable, `dementia_all`, to get a good idea of what I would be predicting:
+
+```{r}
+ggplot(data = dementia, mapping = aes(x = dementia_all)) + geom_bar() + theme_minimal() + xlab('Dementia')
+```
+
+Clearly, we are dealing with an imbalanced response variable. This could cause complications in predicting patients who *do* have dementia, so we will deal with this by upsampling when creating our recipe. \
+
+\
+
+Next, here is a correlation plot of the relevant variables:
+
+```{r}
+dementia_cor <- dementia %>% na.omit()
+
+dementia_cor$gender <- as.numeric(dementia_cor$gender)
+dementia_cor$dementia_all <- as.numeric(dementia_cor$dementia_all)
+dementia_cor$diabetes <- as.numeric(dementia_cor$diabetes)
+dementia_cor$smoking <- as.numeric(dementia_cor$smoking)
+dementia_cor$hypertension <- as.numeric(dementia_cor$hypertension)
+dementia_cor$hypercholesterolemia <- as.numeric(dementia_cor$hypercholesterolemia)
+dementia_cor$lacunes_num <- as.numeric(dementia_cor$lacunes_num)
+dementia_cor$fazekas_cat <- as.numeric(dementia_cor$fazekas_cat)
+dementia_cor$study <- as.numeric(dementia_cor$study)
+dementia_cor$study1 <- as.numeric(dementia_cor$study1)
+dementia_cor$lac_count <- as.numeric(dementia_cor$lac_count)
+dementia_cor$cmb_count <- as.numeric(dementia_cor$cmb_count)
+
+correlation <- cor(dementia_cor)
+
+corrplot(correlation, type = 'lower')
+
+
+```
+
+From this plot, we can see that our response variable, `dementia_all`, has strong negative correlations with `ef` (Executive Function), `ps` (Processing Speed) and `global` (Global cognitive score). Also, `dementia_all` has a positive correlation with the SVD (Small Vessel Disease) variables, as well as with the the variables that are used to compute this score (lac_count, fazekas, etc.). 
+
+Something I find interesting, yet makes sense, is the negative correlations between `ef`, `ps`, and `global`, with the `age` variable. This indicates that brain function generally worsens as one ages, which is supported by the positive correlation shown between `age` and `dementia_all`. 
+
+\
+
+Additionally, I notice that `svd_amended_score` and `svd_simple_score` have positive correlations with the `study` and `study1` variables. This indicates some sort of significant difference between the results of the different studies included in our data. I explored these differences in the chart below: 
+
+```{r}
+
+value <- abs(rnorm(1831, 0 , 15))
+
+ggplot(dementia, aes(fill=study, y=value, x=dementia_all)) + 
+    geom_bar(position="fill", stat="identity") + xlab('Dementia') + ylab('Proportion') + theme_minimal()
+
+
+
+```
+
+Here, we see that certain studies included in the dataset yielded a higher proportion of positive dementia results than others. For example, the ASPS study had many patients who didn't have dementia, while the rundmc and scans studies had higher proportions of positive dementia patients. I am unsure of the cause of this discrepancy in the original studies, so I decided to not use `study` or `study1` as predictor variables in my recipe, as I find it irrelevant in predicting a patient's medical diagnosis. \
+
+\
+
+Now that I've performed some initial data analysis, I feel ready to start building my model.
+
+\
+
+## Model Setup
+
+First, we want to organize our training and testing data through the use of stratified sampling and k-fold cross validation:
+
+### Sampling
+
+```{r}
+dementia_split <- initial_split(dementia, prop = 0.70,
+                                strata = dementia_all)
+
+dementia_train <- training(dementia_split)
+dementia_test <- testing(dementia_split)
+
+dementia_fold <- vfold_cv(dementia_train, v = 5, strata = dementia_all)
+
+```
+
+For the split, I chose a proportion of 70% of our data to be in the training set, with 30% in the testing set. I stratified on the response variable, `dementia_all`, set up cross validation with 5 folds, and got the following split between training and testing data.
+
+```{r}
+dim(dementia_train)[1]
+dim(dementia_test)[1]
+#dementia
+```
+
+### Recipe Setup
+
+Time to get cooking! I created a recipe for the different models that I will fit, which included 17 of the original 19 predictor variables, excluding `study` and `study1` due to reasons previously stated. Next, I dummy-coded all categorical variables, and then used imputation on all predictors to generate values for missing data. Also, I upsampled to increase the ratio between sample patients who have dementia and those who don't to 0.5. Finally, I centered and scaled the predictors so that they could be used in prediction.
+
+```{r}
+
+
+dementia_recipe <- recipe(dementia_all ~ age + gender + educationyears + ef + ps + global + diabetes + smoking + hypertension + hypercholesterolemia + lacunes_num + fazekas_cat + svd_simple_score + svd_amended_score + fazekas + lac_count + cmb_count, data = dementia_train) %>% 
+  step_dummy(gender) %>% 
+  step_dummy(diabetes) %>% 
+  step_dummy(smoking) %>% 
+  step_dummy(hypertension) %>% 
+  step_dummy(hypercholesterolemia) %>% 
+  step_dummy(lacunes_num) %>% 
+  step_dummy(fazekas_cat) %>% 
+  step_dummy(lac_count) %>% 
+  step_dummy(cmb_count) %>% 
+  step_impute_bag(svd_simple_score, svd_amended_score, ef, ps, global, impute_with = imp_vars(all_predictors())) %>% 
+  step_upsample(dementia_all, over_ratio = 0.5) %>% 
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors())
+
+#prep(dementia_recipe) %>% bake(new_data = dementia_train)
+
+```
+
+## Model Fitting
+
+I fit four models to the cross-validated training data: 
+
+   - Logistic Regression
+   - Elastic Net
+   - Random Forest
+   - Gradient Boosted Trees
+   
+To fit these models, I first specified the type of model and workflow for the model. I then fit the models to the cross-validated training data, tuning different parameters for Elastic Net, Random Forest, and Gradient Boosted Trees. Finally, I saved the models to external files so that I wouldn't have to fit them every time I ran the document. \
+
+```{r}
+log_mod_dementia <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+log_wflow <- workflow() %>% 
+  add_model(log_mod_dementia) %>% 
+  add_recipe(dementia_recipe)
+```
+
+
+```{r, eval=FALSE}
+# Logistic Regression
+
+fit_log <- tune_grid(
+  log_wflow, 
+  resamples = dementia_fold
+)
+
+save(fit_log, file = "fit_log.rda")
+
+```
+
+```{r, eval=FALSE}
+# Elastic Net
+
+en_dementia <- logistic_reg(mixture = tune(), 
+                              penalty = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("glmnet")
+
+en_wflow_dementia <- workflow() %>% 
+  add_recipe(dementia_recipe) %>% 
+  add_model(en_dementia)
+
+
+elastic_grid_dementia <- grid_regular(penalty(range = c(0.01, 3),
+                                     trans = identity_trans()),
+                        mixture(range = c(0, 1)),
+                             levels = 10)
+
+fit_elastic_dementia <- tune_grid(
+  en_wflow_dementia,
+  resamples = dementia_fold, 
+  grid = elastic_grid_dementia)
+
+save(fit_elastic_dementia, file = "fit_elastic_dementia.rda")
+
+```
+
+
+```{r, eval=FALSE}
+# Random Forest
+
+rf_dementia_spec <- rand_forest(mtry = tune(), 
+                           trees = tune(), 
+                           min_n = tune()) %>%
+  set_engine("ranger", importance = 'impurity') %>% 
+  set_mode("classification")
+
+rf_dementia_wf <- workflow() %>% 
+  add_model(rf_dementia_spec) %>% 
+  add_recipe(dementia_recipe)
+
+rf_grid_dementia <- grid_regular(mtry(range = c(2, 10)), 
+                        trees(range = c(200, 600)),
+                        min_n(range = c(10, 20)),
+                        levels = 5)
+
+tune_rf_dementia <- tune_grid(
+  rf_dementia_wf,
+  resamples = dementia_fold,
+  grid = rf_grid_dementia
+)
+
+save(tune_rf_dementia, file = "tune_rf_dementia.rda")
+```
+
+```{r}
+
+bt_spec <- boost_tree(mtry = tune(), 
+                           trees = tune(), 
+                           learn_rate = tune()) %>%
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+bt_wf <- workflow() %>% 
+  add_model(bt_spec) %>% 
+  add_recipe(dementia_recipe)
+
+```
+
+```{r, eval=FALSE}
+# Gradient-Boosted Trees
+
+bt_grid <- grid_regular(mtry(range = c(2, 10)), 
+                        trees(range = c(200, 600)),
+                        learn_rate(range = c(-10, -1)),
+                        levels = 5)
+
+tune_bt <- tune_grid(
+  bt_wf,
+  resamples = dementia_fold,
+  grid = bt_grid
+)
+
+save(tune_bt, file = "tune_bt.rda")
+
+```
+
+## Model Results
+
+After fitting the models, I selected the four best models, and compared them to each other below. I selected one model from each type of model that I fit, those being Logistic Regression, Random Forest, Elastic Net, and Gradient Boosted Trees. Below are the roc_auc values for the four models, which lead me to choose the best performing model with the highest value.
+
+```{r}
+load("fit_log.rda")
+load("fit_elastic_dementia.rda")
+load("tune_rf_dementia.rda")
+load("tune_bt.rda")
+```
+
+```{r}
+show_best(fit_log, n = 1)
+show_best(fit_elastic_dementia, n = 1)
+show_best(tune_rf_dementia, n = 1)
+show_best(tune_bt, n = 1)
+
+best_log <- select_best(fit_log)
+best_en <- select_best(fit_elastic_dementia)
+best_rf <- select_best(tune_rf_dementia)
+best_bt <- select_best(tune_bt)
+```
+
+\
+
+Surprisingly, the model with the highest roc_auc value was actually logistic regression! Typically, tree and forest models tend to perform better, but that didn't seem to be the case here. To make predictions on testing data, I will use this logistic regression model, along with the boosted tree that performed best, which had hyperparameter values of `mtry` = 2, `trees` = 600, and `learn_rate` = 1.778279e-08. Below I will show a plot of the boosted tree models fit that visualizes the optimization of these hyperparameters. 
+
+```{r}
+autoplot(tune_bt) + theme_minimal()
+```
+
+\
+
+### Predictions
+
+First, we finalize our logistic regression and boosted tree models, and use them to make predictions. Here are predictions and metrics for the logistic regression model first: 
+
+```{r}
+final_log <- finalize_workflow(log_wflow, best_log)
+final_log <- fit(final_log, dementia_train)
+
+final_bt <- finalize_workflow(bt_wf, best_bt)
+final_bt <- fit(final_bt, dementia_train)
+
+```
+
+```{r}
+
+final_log_test <- augment(final_log, 
+                               dementia_test) %>% 
+  select(dementia_all, starts_with(".pred"))
+
+head(final_log_test)
+roc_auc(final_log_test, truth = dementia_all, .pred_0)
+
+```
+
+\
+
+Now our boosted tree model:
+
+```{r}
+final_bt_test <- augment(final_bt, 
+                               dementia_test) %>% 
+  select(dementia_all, starts_with(".pred"))
+
+head(final_bt_test)
+roc_auc(final_bt_test, truth = dementia_all, .pred_0)
+
+```
+
+\
+
+After testing our two best models, I found that the boosted tree had a slightly higher ROC AUC than the logistic regression model. Both of these models have high testing accuracy, with over 0.8 ROC AUC respectively. To measure error rate among the imbalanced categories of the categorical response variable, I also included a confusion matrix heat map below for our final boosted tree model:
+
+```{r}
+
+conf_mat(final_bt_test, truth = dementia_all, 
+         .pred_class) %>% 
+  autoplot(type = "heatmap")
+
+```
+
+As we can see from this graph, the model predicted a negative diagnosis very accurately, but struggled a bit more when a patient did have dementia. This is to be expected, as this type of issue is common with imbalanced responses, but my model still performed well, and made some correct predictions of patients having dementia. 
+
+\
+
+## Conclusion
+
+Throughout this paper, we explored the initial dataset and its relevant features, created a recipe for a model, fit that recipe to four different model types, and used those models to make predictions of dementia data. We identified important correlations between variables, and their likelihood to be a dementia risk factor. Some of these risk factors can be age, high blood pressure and microbleeds in the brain. The bulk of the work that went into this paper was in the model fitting process, in which we fit a logistic regression model, an elastic net model, a random forest model and a gradient boosted trees model. Our logistic regression and gradient boosted trees models performed best, and upon further investigation, we found that the boosted trees model performed best on the testing set. \
+
+\
+
+In the future, I hope to return to this project to refine my models, and perhaps fit more in search of more accurate results. Also, I want to examine the data more closely to investigate why certain models worked better than others. For example, I was surprised by how well my logistic regression model performed, and I think the answer to this curiosity can be found somewhere deeper in the original dataset. In the future, I hope researchers continue to investigate dementia risk factors, as dementia-related illnesses are shrouded in mystery, with their direct causes being somewhat vague. I hope that with this new research may come new, interesting data that can help improve models like the ones I've showcased in this paper.
